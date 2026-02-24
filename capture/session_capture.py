@@ -320,3 +320,72 @@ class SmartSessionCapture:
             sentence = sentence.strip()
             if not sentence:
                 continue
+            
+            # 简单的关键词匹配
+            important_keywords = {
+                "重要": CaptureType.FACT,
+                "决定": CaptureType.DECISION,
+                "计划": CaptureType.PLAN,
+                "偏好": CaptureType.PREFERENCE,
+                "经验": CaptureType.LESSON,
+                "应该": CaptureType.LESSON
+            }
+            
+            for keyword, capture_type in important_keywords.items():
+                if keyword in sentence:
+                    confidence = 0.6  # 基础置信度
+                    
+                    # 位置权重
+                    if i == 0 or i == len(sentences) - 1:  # 开头或结尾
+                        confidence += 0.1
+                    
+                    captured_item = CapturedItem(
+                        type=capture_type,
+                        content=sentence,
+                        confidence=confidence,
+                        timestamp=datetime.now(),
+                        context=self._get_current_context(),
+                        metadata={"capture_method": "smart_extraction", "sentence_index": i}
+                    )
+                    
+                    extracted_items.append(captured_item)
+                    logger.info(f"✅ 智能提取: [{capture_type.value}] {sentence[:50]}... (置信度: {confidence:.2f})")
+                    break
+        
+        return extracted_items
+    
+    def _deduplicate_items(self, items: List[CapturedItem]) -> List[CapturedItem]:
+        """去重捕获项"""
+        if not items:
+            return []
+        
+        unique_items = []
+        seen_content = set()
+        
+        # 按置信度排序，保留高置信度的
+        items.sort(key=lambda x: x.confidence, reverse=True)
+        
+        for item in items:
+            # 创建内容指纹（简化版本）
+            content_fingerprint = self._create_content_fingerprint(item.content)
+            
+            if content_fingerprint not in seen_content:
+                seen_content.add(content_fingerprint)
+                unique_items.append(item)
+            else:
+                logger.info(f"🔄 去重: 跳过重复内容 - {item.content[:50]}...")
+        
+        return unique_items
+    
+    def _create_content_fingerprint(self, content: str) -> str:
+        """创建内容指纹用于去重"""
+        # 移除标点符号和空格，转换为小写
+        import re
+        clean_content = re.sub(r'[^\w]', '', content.lower())
+        
+        # 如果内容太短，返回原文
+        if len(clean_content) < 10:
+            return content
+        
+        # 返回前20个字符作为指纹（可以根据需要调整）
+        return clean_content[:20]

@@ -54,7 +54,8 @@ class LiteMemoryCLI:
             # 存储捕获的记忆
             stored_count = 0
             for item in captured_items:
-                success = self.memory_manager.store_memory(item)
+                from core.memory_manager import MemoryLayer
+                success = self.memory_manager.store_memory(item.content, MemoryLayer.HOT, item.type.value, item.confidence)
                 if success:
                     stored_count += 1
             
@@ -85,23 +86,14 @@ class LiteMemoryCLI:
         logger.info(f"🔍 开始搜索记忆 - 查询: '{query}'")
         
         try:
-            # 使用向量搜索
+            # 使用内存管理器的搜索功能
             results = self.memory_manager.search_memories(query, limit, min_importance)
             
             result = {
                 "success": True,
                 "query": query,
                 "result_count": len(results),
-                "results": [
-                    {
-                        "content": result.content,
-                        "score": result.score,
-                        "category": result.category,
-                        "timestamp": result.timestamp.isoformat(),
-                        "metadata": result.metadata
-                    }
-                    for result in results
-                ]
+                "results": results
             }
             
             logger.info(f"✅ 搜索完成 - 找到 {len(results)} 条相关记忆")
@@ -117,18 +109,29 @@ class LiteMemoryCLI:
         
         try:
             # 创建记忆项
-            from core.memory_manager import MemoryItem
+            from core.memory_manager import MemoryItem, MemoryLayer
             
             memory_item = MemoryItem(
                 id=f"manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 content=content,
+                layer=MemoryLayer.HOT,
                 category=MemoryCategory(category),
                 importance=importance,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
+                metadata={"source": "manual_input"},
+                tags=[category, "manual"]
             )
             
-            # 存储记忆
-            success = self.memory_manager.store_memory(memory_item)
+            # 存储记忆（直接存储内容，而不是MemoryItem对象）
+            from core.memory_manager import MemoryLayer
+            success = self.memory_manager.store_memory(
+                content=content,
+                layer=MemoryLayer.HOT,
+                category=category,
+                importance=importance,
+                metadata={"source": "manual_input"},
+                tags=[category, "manual"]
+            )
             
             result = {
                 "success": success,
@@ -150,6 +153,59 @@ class LiteMemoryCLI:
             return {"success": False, "error": str(e)}
     
     def show_session_state(self) -> Dict[str, Any]:
+        """显示会话状态"""
+        try:
+            # 获取内存管理器的统计信息
+            stats = self.memory_manager.get_stats()
+            
+            # 创建状态显示
+            status_content = f"""# 🧠 轻量化三层记忆模型 - 系统状态
+
+## 📊 记忆统计
+- **总记忆数**: {stats.get('total_memories', 0)}
+- **快速记忆**: {stats.get('hot_count', 0)} 条
+- **智能搜索**: {stats.get('warm_count', 0)} 条  
+- **长期存档**: {stats.get('cold_count', 0)} 条
+
+## 💾 存储信息
+- **总大小**: {stats.get('storage_size_mb', 0)} MB
+- **最后更新**: {stats.get('last_update', '未知')}
+
+## 🏷️ 分类统计
+"""
+            
+            # 添加分类统计
+            category_stats = stats.get('categories', {})
+            if category_stats:
+                for category, count in category_stats.items():
+                    status_content += f"- **{category}**: {count} 条\n"
+            else:
+                status_content += "- 暂无分类数据\n"
+            
+            status_content += f"\n---\n*状态生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+            
+            # 保存到会话状态文件
+            session_state_file = self.workspace / "SESSION-STATE.md"
+            with open(session_state_file, 'w', encoding='utf-8') as f:
+                f.write(status_content)
+            
+            return {
+                "success": True,
+                "file_exists": True,
+                "content": status_content,
+                "file_size": len(status_content),
+                "last_modified": datetime.now().isoformat(),
+                "stats": stats
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 生成会话状态失败: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "file_exists": False,
+                "message": f"生成会话状态失败: {str(e)}"
+            }
         """显示会话状态"""
         try:
             session_file = self.workspace / "SESSION-STATE.md"

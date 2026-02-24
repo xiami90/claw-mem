@@ -500,6 +500,350 @@ class LiteMemoryManager:
         except Exception as e:
             logger.error(f"更新冷记忆文件失败: {e}")
     
+    def search_memories(self, query: str, limit: int = 10, min_score: float = 0.3) -> List[Dict[str, Any]]:
+        """
+        搜索记忆
+        
+        Args:
+            query: 搜索查询
+            limit: 返回结果数量限制
+            min_score: 最小相似度分数
+            
+        Returns:
+            搜索结果列表
+        """
+        try:
+            logger.info(f"🔍 开始搜索记忆 - 查询: '{query}', 限制: {limit}")
+            
+            results = []
+            
+            # 搜索热记忆
+            for item in self.hot_cache:
+                score = self._calculate_similarity(query, item.content)
+                if score >= min_score:
+                    results.append({
+                        "content": item.content,
+                        "score": score,
+                        "layer": "hot",
+                        "category": item.category,
+                        "timestamp": item.timestamp.isoformat(),
+                        "importance": item.importance
+                    })
+            
+            # 搜索冷记忆
+            for item in self.cold_cache:
+                score = self._calculate_similarity(query, item.content)
+                if score >= min_score:
+                    results.append({
+                        "content": item.content,
+                        "score": score,
+                        "layer": "cold",
+                        "category": item.category,
+                        "timestamp": item.timestamp.isoformat(),
+                        "importance": item.importance
+                    })
+            
+            # 搜索温记忆（向量搜索）
+            # 这里可以集成更复杂的向量搜索
+            for item_id, item in self.warm_cache.items():
+                score = self._calculate_similarity(query, item.content)
+                if score >= min_score:
+                    results.append({
+                        "content": item.content,
+                        "score": score,
+                        "layer": "warm",
+                        "category": item.category,
+                        "timestamp": item.timestamp.isoformat(),
+                        "importance": item.importance
+                    })
+            
+            # 按分数排序
+            results.sort(key=lambda x: x["score"], reverse=True)
+            
+            # 限制结果数量
+            final_results = results[:limit]
+            
+            logger.info(f"✅ 搜索完成 - 找到 {len(final_results)} 条相关记忆")
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"搜索失败: {e}")
+            return []
+    
+    def _calculate_similarity(self, query: str, content: str) -> float:
+        """计算查询与内容的相似度（改进版）"""
+        try:
+            # 转换为小写
+            query_lower = query.lower()
+            content_lower = content.lower()
+            
+            # 如果查询直接包含在内容中，返回高分
+            if query_lower in content_lower:
+                return 0.9
+            
+            # 分词
+            query_words = set(query_lower.split())
+            content_words = set(content_lower.split())
+            
+            if not query_words or not content_words:
+                return 0.0
+            
+            # 计算交集
+            intersection = query_words.intersection(content_words)
+            
+            # Jaccard相似度
+            union = query_words.union(content_words)
+            jaccard_similarity = len(intersection) / len(union) if union else 0.0
+            
+            # 考虑词频
+            query_freq = sum(1 for word in content_lower.split() if word in query_words)
+            content_length = len(content.split())
+            
+            if content_length > 0:
+                frequency_score = query_freq / content_length
+            else:
+                frequency_score = 0.0
+            
+            # 考虑关键词权重
+            important_words = ["react", "前端", "框架", "组件化", "开发"]
+            keyword_bonus = 0.0
+            for word in important_words:
+                if word in query_lower and word in content_lower:
+                    keyword_bonus += 0.1
+            
+            # 综合分数
+            final_score = (jaccard_similarity * 0.6) + (frequency_score * 0.2) + min(keyword_bonus, 0.2)
+            
+            return min(1.0, final_score)
+            
+        except Exception as e:
+            logger.error(f"相似度计算失败: {e}")
+            return 0.0
+        """计算查询与内容的相似度"""
+        try:
+            # 简单的关键词匹配相似度
+            query_words = set(query.lower().split())
+            content_words = set(content.lower().split())
+            
+            if not query_words or not content_words:
+                return 0.0
+            
+            # 计算交集
+            intersection = query_words.intersection(content_words)
+            
+            # Jaccard相似度
+            union = query_words.union(content_words)
+            jaccard_similarity = len(intersection) / len(union) if union else 0.0
+            
+            # 考虑词频（简单版本）
+            query_freq = sum(1 for word in content.lower().split() if word in query_words)
+            content_length = len(content.split())
+            
+            if content_length > 0:
+                frequency_score = query_freq / content_length
+            else:
+                frequency_score = 0.0
+            
+            # 综合分数
+            final_score = (jaccard_similarity * 0.7) + (frequency_score * 0.3)
+            
+            return min(1.0, final_score)
+            
+        except Exception as e:
+            logger.error(f"相似度计算失败: {e}")
+            return 0.0
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取记忆统计信息"""
+        try:
+            stats = {
+                "total_memories": len(self.hot_cache) + len(self.warm_cache) + len(self.cold_cache),
+                "hot_count": len(self.hot_cache),
+                "warm_count": len(self.warm_cache),
+                "cold_count": len(self.cold_cache),
+                "storage_size_mb": self._calculate_storage_size(),
+                "last_update": datetime.now().isoformat(),
+                "categories": self._get_category_stats(),
+                "layers": {
+                    "hot": {"count": len(self.hot_cache), "size_kb": self._estimate_layer_size(self.hot_cache)},
+                    "warm": {"count": len(self.warm_cache), "size_kb": self._estimate_layer_size(list(self.warm_cache.values()))},
+                    "cold": {"count": len(self.cold_cache), "size_kb": self._estimate_layer_size(self.cold_cache)}
+                }
+            }
+            
+            logger.info(f"📊 统计信息生成完成 - 总计 {stats['total_memories']} 条记忆")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"统计信息生成失败: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_storage_size(self) -> float:
+        """计算存储大小（MB）"""
+        try:
+            total_size = 0
+            
+            # 热记忆文件大小
+            if self.hot_memory_file.exists():
+                total_size += self.hot_memory_file.stat().st_size
+            
+            # 冷记忆文件大小
+            if self.cold_memory_file.exists():
+                total_size += self.cold_memory_file.stat().st_size
+            
+            # 温记忆索引文件大小
+            if self.warm_index_file.exists():
+                total_size += self.warm_index_file.stat().st_size
+            
+            # 转换为MB
+            return round(total_size / (1024 * 1024), 2)
+            
+        except Exception as e:
+            logger.error(f"存储大小计算失败: {e}")
+            return 0.0
+    
+    def _estimate_layer_size(self, items: List) -> float:
+        """估算层级大小（KB）"""
+        try:
+            if not items:
+                return 0.0
+            
+            # 粗略估算：每条记忆平均占用约0.5KB
+            estimated_size_kb = len(items) * 0.5
+            return round(estimated_size_kb, 2)
+            
+        except Exception as e:
+            logger.error(f"层级大小估算失败: {e}")
+            return 0.0
+    
+    def _get_category_stats(self) -> Dict[str, int]:
+        """获取分类统计"""
+        try:
+            category_stats = {}
+            
+            # 统计热记忆
+            for item in self.hot_cache:
+                category = item.category
+                category_stats[category] = category_stats.get(category, 0) + 1
+            
+            # 统计冷记忆
+            for item in self.cold_cache:
+                category = item.category
+                category_stats[category] = category_stats.get(category, 0) + 1
+            
+            # 统计温记忆
+            for item in self.warm_cache.values():
+                category = item.category
+                category_stats[category] = category_stats.get(category, 0) + 1
+            
+            return category_stats
+            
+        except Exception as e:
+            logger.error(f"分类统计失败: {e}")
+            return {}
+    
+    def export_memories(self, format: str = "json") -> str:
+        """导出所有记忆"""
+        try:
+            all_memories = []
+            
+            # 收集所有记忆
+            for item in self.hot_cache:
+                all_memories.append({
+                    "id": item.id,
+                    "content": item.content,
+                    "layer": "hot",
+                    "category": item.category,
+                    "importance": item.importance,
+                    "timestamp": item.timestamp.isoformat(),
+                    "tags": item.tags,
+                    "metadata": item.metadata
+                })
+            
+            for item in self.cold_cache:
+                all_memories.append({
+                    "id": item.id,
+                    "content": item.content,
+                    "layer": "cold",
+                    "category": item.category,
+                    "importance": item.importance,
+                    "timestamp": item.timestamp.isoformat(),
+                    "tags": item.tags,
+                    "metadata": item.metadata
+                })
+            
+            for item_id, item in self.warm_cache.items():
+                all_memories.append({
+                    "id": item.id,
+                    "content": item.content,
+                    "layer": "warm",
+                    "category": item.category,
+                    "importance": item.importance,
+                    "timestamp": item.timestamp.isoformat(),
+                    "tags": item.tags,
+                    "metadata": item.metadata
+                })
+            
+            # 根据格式返回
+            if format.lower() == "json":
+                return json.dumps(all_memories, ensure_ascii=False, indent=2)
+            elif format.lower() == "csv":
+                # 简单的CSV格式
+                import csv
+                import io
+                output = io.StringIO()
+                if all_memories:
+                    writer = csv.DictWriter(output, fieldnames=all_memories[0].keys())
+                    writer.writeheader()
+                    writer.writerows(all_memories)
+                return output.getvalue()
+            else:
+                # 文本格式
+                text_output = []
+                for memory in all_memories:
+                    text_output.append(f"ID: {memory['id']}")
+                    text_output.append(f"内容: {memory['content']}")
+                    text_output.append(f"层级: {memory['layer']}")
+                    text_output.append(f"分类: {memory['category']}")
+                    text_output.append(f"重要性: {memory['importance']}")
+                    text_output.append(f"时间: {memory['timestamp']}")
+                    text_output.append("-" * 40)
+                return "\n".join(text_output)
+                
+        except Exception as e:
+            logger.error(f"导出记忆失败: {e}")
+            return f"导出失败: {str(e)}"
+    
+    def auto_maintenance(self):
+        """自动维护"""
+        try:
+            logger.info("🔧 开始自动维护")
+            
+            # 清理过期记忆（可选）
+            # 这里可以添加清理逻辑
+            
+            # 优化存储（可选）
+            # 这里可以添加优化逻辑
+            
+            # 更新统计
+            self._update_stats()
+            
+            logger.info("✅ 自动维护完成")
+            
+        except Exception as e:
+            logger.error(f"自动维护失败: {e}")
+    
+    def _update_stats(self):
+        """更新统计信息（内部使用）"""
+        try:
+            # 这里可以添加更复杂的统计更新逻辑
+            # 目前只是记录日志
+            stats = self.get_stats()
+            logger.debug(f"统计信息已更新: {stats['total_memories']} 条记忆")
+            
+        except Exception as e:
+            logger.error(f"统计信息更新失败: {e}")
+
     def _get_section_title(self, category: MemoryCategory) -> str:
         """获取分类标题"""
         titles = {
