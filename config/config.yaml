@@ -1,0 +1,143 @@
+# OpenClaw 轻量化三层记忆模型配置文件
+# Lite Memory System Configuration
+
+version: "1.0.0"
+name: "OpenClaw Lite Memory"
+description: "轻量化三层记忆模型 - 智能捕获、向量搜索、长期存档"
+
+# 内存配置
+memory:
+  enabled: true
+  auto_capture: true
+  max_session_size: "50KB"
+  importance_threshold: 0.6
+  
+  # 三层架构配置
+  layers:
+    hot_ram:
+      enabled: true
+      file: "SESSION-STATE.md"
+      auto_update: true
+      max_entries: 100
+      
+    warm_store:
+      enabled: true
+      provider: "vector_index"  # 简化版，不使用 LanceDB
+      dimension: 384
+      max_results: 10
+      similarity_threshold: 0.7
+      
+    cold_store:
+      enabled: true
+      file: "MEMORY.md"
+      git_enabled: true
+      auto_archive: true
+      archive_after_days: 30
+
+# 捕获配置
+capture:
+  enabled: true
+  realtime_capture: true
+  batch_processing: true
+  min_confidence: 0.6
+  max_context_size: 10
+  
+  # 捕获类型权重
+  categories:
+    decision:
+      weight: 0.9
+      min_confidence: 0.7
+      patterns:
+        - "决定|决策|选择|确定|采用|使用"
+        - "技术栈|框架|工具|方案"
+        - "架构|设计|实现"
+        
+    preference:
+      weight: 0.8
+      min_confidence: 0.6
+      patterns:
+        - "偏好|喜欢|偏爱|倾向于|更喜欢"
+        - "不喜欢|讨厌|反感|不想|不要"
+        - "我觉得|我认为|对我而言"
+        
+    fact:
+      weight: 0.7
+      min_confidence: 0.5
+      patterns:
+        - "重要|关键|核心|主要"
+        - "记住|牢记|备忘|记录"
+        - "事实是|实际上是|其实是"
+        - "版本|型号|规格|配置|API"
+        
+    plan:
+      weight: 0.8
+      min_confidence: 0.6
+      patterns:
+        - "计划|打算|准备|将要|下一步"
+        - "目标|目的|要达成|要完成"
+        - "明天|后天|下周|下个月"
+        - "第一步|第二步|第三阶段"
+        
+    lesson:
+      weight: 0.85
+      min_confidence: 0.65
+      patterns:
+        - "经验|教训|学到|总结|反思"
+        - "应该|不应该|要|不要"
+        - "注意|小心|警惕"
+        - "错误|失误|问题"
+
+# 搜索配置
+search:
+  enabled: true
+  vector_search: true
+  keyword_search: true
+  fuzzy_search: true
+  
+  # 搜索参数
+  parameters:
+    max_results: 10
+    similarity_threshold: 0.7
+    fuzzy_threshold: 0.8
+    time_decay_factor: 0.95  # 时间衰减因子
+    importance_boost: 1.2    # 重要性提升因子
+
+# 存储配置
+storage:
+  format: "json"  # json, pickle, sqlite
+  compression: true
+  backup_enabled: true
+  backup_interval_days: 7
+  max_storage_size: "100MB"
+
+# 日志配置
+logging:
+  enabled: true
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: ".memory/memory.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# 性能配置
+performance:
+  cache_size: 1000
+  batch_size: 50
+  cleanup_interval_hours: 24
+  max_memory_age_days: 90
+
+# 集成配置
+integration:
+  openclaw:
+    enabled: true
+    auto_start: true
+    hook_commands: true
+    
+  git:
+    enabled: true
+    auto_commit: true
+    commit_message_template: "Memory update: {count} new memories"
+    
+  external_apis:
+    enabled: false  # 默认关闭外部API调用
+    embedding_service: null
+    backup_service: null

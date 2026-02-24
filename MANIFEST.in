@@ -1,0 +1,10 @@
+# OpenClaw 轻量化三层记忆模型 - 包清单文件
+include README.md
+include LICENSE
+include requirements.txt
+include MANIFEST.in
+include config/config.yaml
+recursive-include tests *.py
+recursive-include examples *.py *.sh
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

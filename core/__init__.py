@@ -1,0 +1,13 @@
+"""
+OpenClaw 轻量化三层记忆模型 - 核心模块
+Core module for OpenClaw Lite Memory System
+
+@author: DataBot
+@version: 1.0.0
+"""
+
+from .memory_manager import LiteMemoryManager, MemoryItem, MemoryCategory
+
+__all__ = ['LiteMemoryManager', 'MemoryItem', 'MemoryCategory']
+__version__ = '1.0.0'
+__author__ = 'DataBot'
