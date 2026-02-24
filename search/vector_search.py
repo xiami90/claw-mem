@@ -212,3 +212,129 @@ class VectorSearch:
         # 移除标点符号
         import re
         text = re.sub(r'[，。！？；：]', '', text)
+        
+        # 简单的分词：按空格和常见分隔符分割
+        words = re.split(r'[\s\,\;\:]+', text)
+        
+        # 过滤空字符串和短词
+        words = [word.strip() for word in words if word.strip() and len(word.strip()) > 1]
+        
+        return words
+    
+    def search(self, query: str, limit: int = 5, min_score: float = 0.1) -> List[Dict[str, Any]]:
+        """
+        向量搜索
+        
+        Args:
+            query: 搜索查询
+            limit: 返回结果数量限制
+            min_score: 最小相似度分数
+            
+        Returns:
+            搜索结果列表
+        """
+        try:
+            logger.info(f"🔍 向量搜索 - 查询: '{query}', 限制: {limit}")
+            
+            if not self.index or not self.index['vectors']:
+                logger.warning("向量索引为空")
+                return []
+            
+            # 将查询转换为向量
+            query_vector = self.text_to_vector(query)
+            
+            if np.all(query_vector == 0):
+                logger.warning("查询向量为零，无法搜索")
+                return []
+            
+            results = []
+            
+            # 计算与所有向量的相似度
+            for vector_id, vector_data in self.index['vectors'].items():
+                stored_vector = np.array(vector_data['vector'])
+                
+                # 计算余弦相似度
+                similarity = self._cosine_similarity(query_vector, stored_vector)
+                
+                if similarity >= min_score:
+                    results.append({
+                        "id": vector_id,
+                        "content": vector_data['content'],
+                        "score": float(similarity),
+                        "metadata": vector_data.get('metadata', {}),
+                        "timestamp": vector_data.get('timestamp', '')
+                    })
+            
+            # 按相似度排序
+            results.sort(key=lambda x: x["score"], reverse=True)
+            
+            # 限制结果数量
+            final_results = results[:limit]
+            
+            logger.info(f"✅ 向量搜索完成 - 找到 {len(final_results)} 条相关记忆")
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"向量搜索失败: {e}")
+            return []
+    
+    def add_vector(self, vector_id: str, content: str, metadata: Optional[Dict] = None) -> bool:
+        """
+        添加向量到索引
+        
+        Args:
+            vector_id: 向量ID
+            content: 内容文本
+            metadata: 元数据
+            
+        Returns:
+            是否成功添加
+        """
+        try:
+            # 将内容转换为向量
+            vector = self.text_to_vector(content)
+            
+            if np.all(vector == 0):
+                logger.warning(f"内容 '{content}' 转换为零向量，跳过")
+                return False
+            
+            # 添加到索引
+            self.index['vectors'][vector_id] = {
+                'vector': vector.tolist(),
+                'content': content,
+                'metadata': metadata or {},
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # 更新统计信息
+            self.index['statistics']['total_vectors'] += 1
+            
+            logger.info(f"✅ 向量添加成功: {vector_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"向量添加失败: {e}")
+            return False
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """计算余弦相似度"""
+        try:
+            # 计算点积
+            dot_product = np.dot(vec1, vec2)
+            
+            # 计算范数
+            norm1 = np.linalg.norm(vec1)
+            norm2 = np.linalg.norm(vec2)
+            
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            
+            # 计算余弦相似度
+            similarity = dot_product / (norm1 * norm2)
+            
+            # 确保在合理范围内
+            return max(0.0, min(1.0, similarity))
+            
+        except Exception as e:
+            logger.error(f"余弦相似度计算失败: {e}")
+            return 0.0

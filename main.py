@@ -55,7 +55,7 @@ class LiteMemoryCLI:
             stored_count = 0
             for item in captured_items:
                 from core.memory_manager import MemoryLayer
-                success = self.memory_manager.store_memory(item.content, MemoryLayer.HOT, item.type.value, item.confidence)
+                success = self.memory_manager.store_memory(item.content, 'hot', item.type.value, item.confidence)
                 if success:
                     stored_count += 1
             

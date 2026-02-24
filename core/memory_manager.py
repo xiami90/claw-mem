@@ -279,7 +279,7 @@ class LiteMemoryManager:
                     )
                     self.cold_cache.append(memory_item)
     
-    def store_memory(self, content: str, layer: MemoryLayer = MemoryLayer.HOT,
+    def store_memory(self, content: str, layer: str = "hot",
                     category: str = "general", importance: float = 0.5,
                     metadata: Optional[Dict] = None, tags: Optional[List[str]] = None) -> bool:
         """
@@ -307,11 +307,22 @@ class LiteMemoryManager:
                 logger.info("Duplicate content detected, updating existing")
                 return self._update_existing(content)
             
+            # 转换层级
+            if isinstance(layer, str):
+                layer_map = {
+                    'hot': MemoryLayer.HOT,
+                    'warm': MemoryLayer.WARM,
+                    'cold': MemoryLayer.COLD
+                }
+                memory_layer = layer_map.get(layer.lower(), MemoryLayer.HOT)
+            else:
+                memory_layer = layer
+            
             # 创建记忆项
             memory_item = MemoryItem(
                 id=self._generate_id(),
                 content=content,
-                layer=layer,
+                layer=memory_layer,
                 category=category,
                 importance=importance,
                 timestamp=datetime.now(),
@@ -323,7 +334,7 @@ class LiteMemoryManager:
             success = self._store_to_layer(memory_item)
             
             if success:
-                logger.info(f"Memory stored successfully: {memory_item.id} in layer {layer.value}")
+                logger.info(f"Memory stored successfully: {memory_item.id} in layer {memory_layer.value}")
                 # 更新统计信息
                 self._update_stats()
             
@@ -382,6 +393,46 @@ class LiteMemoryManager:
         return f"mem_{timestamp}"
     
     def _categorize_content(self, content: str) -> str:
+        """自动分类内容（改进版）"""
+        content_lower = content.lower()
+        
+        # 决策类关键词
+        decision_keywords = ['决定', '选择', '方案', '策略', '确定', '采用', '使用']
+        if any(keyword in content_lower for keyword in decision_keywords):
+            return 'decision'
+        
+        # 偏好类关键词
+        preference_keywords = ['偏好', '习惯', '喜欢', '讨厌', '希望', '想要']
+        if any(keyword in content_lower for keyword in preference_keywords):
+            return 'preference'
+        
+        # 计划类关键词
+        plan_keywords = ['计划', '目标', '下一步', '准备', '预计', '需要', '时间']
+        if any(keyword in content_lower for keyword in plan_keywords):
+            return 'plan'
+        
+        # 事实类关键词
+        fact_keywords = ['重要', '关键', '记住', '事实', '确认', '信息']
+        if any(keyword in content_lower for keyword in fact_keywords):
+            return 'fact'
+        
+        # 经验教训类关键词
+        lesson_keywords = ['经验', '教训', '学到', '总结', '应该', '避免']
+        if any(keyword in content_lower for keyword in lesson_keywords):
+            return 'lesson'
+        
+        # 项目类关键词
+        project_keywords = ['项目', '任务', '工作', '进度', '完成']
+        if any(keyword in content_lower for keyword in project_keywords):
+            return 'project'
+        
+        # 学习类关键词
+        learning_keywords = ['学习', '技能', '知识', '技术', '理解']
+        if any(keyword in content_lower for keyword in learning_keywords):
+            return 'learning'
+        
+        # 默认分类
+        return 'general'
         """自动分类内容"""
         content_lower = content.lower()
         
