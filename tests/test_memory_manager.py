@@ -55,12 +55,12 @@ class TestLiteMemoryManager(unittest.TestCase):
     
     def test_capture_from_text_preference(self):
         """测试从文本捕获偏好信息"""
-        text = "用户偏好深色主题界面，不喜欢过于复杂的设计。"
+        text = "示例偏好内容，用于测试。"
         memories = self.memory_manager.capture_from_text(text)
         
         self.assertGreater(len(memories), 0)
         self.assertEqual(memories[0].category, MemoryCategory.PREFERENCE)
-        self.assertIn("深色主题", memories[0].content)
+        self.assertIn("示例偏好", memories[0].content)
     
     def test_capture_from_text_plan(self):
         """测试从文本捕获计划信息"""

@@ -291,7 +291,7 @@ def main():
   python main.py search --query "前端框架"
   
   # 存储单条记忆
-  python main.py store --content "用户偏好深色主题" --category preference
+  python main.py store --content "示例偏好内容" --category preference
   
   # 显示会话状态
   python main.py status

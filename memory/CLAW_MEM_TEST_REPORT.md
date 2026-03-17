@@ -190,8 +190,8 @@ L3 向量数据库 (ChromaDB)
 
 ```
 从记忆中找到:
-- MEMORY.md: "已记住用户生日(7月20日)和咖啡偏好"
-- IronClaw 数据库: "用户的生日是7月20日"
+- MEMORY.md: "已记住用户偏好信息"
+- IronClaw 数据库: "用户偏好已记录"
 - L2 存储: user_preferences/ 目录
 
 ⏱️ 时间: 0.7ms

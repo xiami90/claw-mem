@@ -115,7 +115,7 @@ def test_result_filter():
     
     # 创建测试结果
     test_results = [
-        {'id': '1', 'content': '用户生日是7月20日', 'similarity': 0.9, 'gravity': 1.5},
+        {'id': '1', 'content': '示例记忆内容', 'similarity': 0.9, 'gravity': 1.5},
         {'id': '2', 'content': '项目架构设计', 'similarity': 0.8, 'gravity': 1.2},
         {'id': '3', 'content': '临时想法', 'similarity': 0.2, 'gravity': 0.5},
         {'id': '4', 'content': '重要决策', 'similarity': 0.85, 'gravity': 1.0},

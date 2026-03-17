@@ -19,7 +19,7 @@ def main():
         epilog="""
 示例：
   # 存储记忆
-  python3 memory_cli.py store --topic "用户生日" --content "7月20日" --category "个人"
+  python3 memory_cli.py store --topic "示例主题" --content "示例内容" --category "个人"
   
   # 搜索记忆
   python3 memory_cli.py search --query "生日" --limit 5
