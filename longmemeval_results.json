@@ -1,0 +1,12 @@
+{
+  "scores": {
+    "information_extraction": 100.0,
+    "multi_session_reasoning": 50.0,
+    "knowledge_updates": 100,
+    "temporal_reasoning": 100.0,
+    "abstention": 100
+  },
+  "average": 90.0,
+  "grade": "A (优秀)",
+  "elapsed": 5.288574457168579
+}

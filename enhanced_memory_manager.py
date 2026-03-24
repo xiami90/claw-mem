@@ -1,182 +1,209 @@
-#!/usr/bin/env python3
-"""
-增强版轻量化三层记忆模型
-集成智能模型路由，支持多模型调度和故障转移
-"""
 
-import sys
+import datetime
+import json
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'skills'))
+from typing import Dict, List, Optional, Any
 
-from model_router_skill import get_model_status, select_best_model
-from core.memory_manager import LiteMemoryManager, MemoryLayer
-from capture.session_capture import SmartSessionCapture
-from search.vector_search import VectorSearch
-import logging
-
-# 配置日志 - 简化输出
-logging.basicConfig(
-    level=logging.WARNING,
-    format='%(levelname)s: %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-class EnhancedMemoryManager:
-    """增强版记忆管理器 - 集成智能模型路由"""
+class EnhancedThreeLayerMemoryManager:
+    """增强版三层记忆管理器 - 解决上下文溢出问题"""
     
-    def __init__(self, workspace_path: str = "."):
-        """初始化增强版记忆管理器"""
-        self.base_manager = LiteMemoryManager(workspace_path)
-        self.session_capture = SmartSessionCapture()
-        self.vector_search = VectorSearch()
-        
-        # 获取当前模型状态
-        self.model_status = get_model_status()
-        self.current_model = select_best_model("reasoning")
-        
-        logger.info(f"增强版记忆管理器初始化完成 (使用模型: {self.current_model})")
-    
-    def get_model_info(self) -> dict:
-        """获取当前模型信息"""
-        return {
-            "current_model": self.current_model,
-            "healthy_models": self.model_status["healthy_models"],
-            "total_models": self.model_status["total_models"],
-            "system_status": f"健康模型数: {self.model_status['healthy_models']}/{self.model_status['total_models']}"
+    def __init__(self):
+        self.hot_ram = []  # 最近7天数据
+        self.warm_store = []  # 7-30天数据，向量索引
+        self.cold_store = []  # 30天+数据，压缩存储
+        self.layer_config = {
+            'hot_ram_days': 7,
+            'warm_store_days': 30,
+            'cold_store_days': 90,
+            'max_hot_ram_size': 50,  # 限制Hot RAM大小
+            'migration_batch_size': 10
         }
     
-    def smart_capture(self, text: str, context: str = None) -> dict:
-        """智能捕获 - 集成模型增强"""
-        try:
-            # 使用当前最佳模型进行增强捕获
-            logger.info(f"智能捕获: {text[:50]}...")
-            
-            # 基础捕获
-            captured_items = self.session_capture.capture_from_text(text, context)
-            
-            # 存储捕获的记忆
-            stored_count = 0
-            for item in captured_items:
-                success = self.base_manager.store_memory(
-                    item.content, 
-                    MemoryLayer.HOT, 
-                    item.type.value, 
-                    item.confidence
-                )
-                if success:
-                    stored_count += 1
-            
-            return {
-                "success": True,
-                "captured_count": len(captured_items),
-                "stored_count": stored_count,
-                "model_used": self.current_model,
-                "items": captured_items
-            }
-            
-        except Exception as e:
-            logger.error(f"智能捕获失败: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "captured_count": 0,
-                "stored_count": 0
-            }
+    def add_memory(self, content: str, category: str = "general") -> Dict[str, Any]:
+        """添加记忆，自动分层存储"""
+        memory = {
+            'id': len(self.hot_ram) + len(self.warm_store) + len(self.cold_store) + 1,
+            'content': content,
+            'category': category,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'vector': self._generate_vector(content),  # 用于Warm Store
+            'compressed': False
+        }
+        
+        # 添加到Hot RAM
+        self.hot_ram.append(memory)
+        
+        # 检查是否需要迁移
+        self._check_and_migrate()
+        
+        return {
+            'success': True,
+            'memory_id': memory['id'],
+            'layer': 'hot_ram',
+            'total_hot': len(self.hot_ram),
+            'total_warm': len(self.warm_store),
+            'total_cold': len(self.cold_store)
+        }
     
-    def intelligent_search(self, query: str, limit: int = 5) -> dict:
-        """智能搜索 - 集成模型增强"""
-        try:
-            logger.info(f"智能搜索: {query}")
-            
-            # 使用基础搜索功能
-            results = self.base_manager.search_memories(query, limit)
-            
-            return {
-                "success": True,
-                "query": query,
-                "results": results,
-                "count": len(results),
-                "model_used": self.current_model
-            }
-            
-        except Exception as e:
-            logger.error(f"智能搜索失败: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "results": [],
-                "count": 0
-            }
+    def _check_and_migrate(self):
+        """检查并执行数据迁移"""
+        current_time = datetime.datetime.now()
+        
+        # 迁移到Warm Store (超过7天)
+        self._migrate_to_warm_store(current_time)
+        
+        # 迁移到Cold Store (超过30天)
+        self._migrate_to_cold_store(current_time)
+        
+        # 清理Hot RAM (超过最大限制)
+        self._cleanup_hot_ram()
     
-    def get_enhanced_stats(self) -> dict:
-        """获取增强版统计信息"""
-        try:
-            # 基础统计
-            base_stats = self.base_manager.get_stats()
-            
-            # 模型状态
-            model_info = self.get_model_info()
-            
-            return {
-                "success": True,
-                "memory_stats": base_stats,
-                "model_info": model_info,
-                "system_summary": f"记忆: {base_stats['total_memories']}条, 模型: {model_info['system_status']}"
-            }
-            
-        except Exception as e:
-            logger.error(f"获取统计失败: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+    def _migrate_to_warm_store(self, current_time: datetime.datetime):
+        """迁移到Warm Store"""
+        cutoff_date = current_time - datetime.timedelta(days=self.layer_config['hot_ram_days'])
+        
+        memories_to_migrate = []
+        remaining_hot = []
+        
+        for memory in self.hot_ram:
+            memory_time = datetime.datetime.fromisoformat(memory['timestamp'])
+            if memory_time < cutoff_date:
+                memories_to_migrate.append(memory)
+            else:
+                remaining_hot.append(memory)
+        
+        if memories_to_migrate:
+            self.warm_store.extend(memories_to_migrate)
+            self.hot_ram = remaining_hot
+            print(f'🔄 迁移 {len(memories_to_migrate)} 条记忆到 Warm Store')
     
-    def refresh_model_status(self):
-        """刷新模型状态"""
-        try:
-            self.model_status = get_model_status()
-            self.current_model = select_best_model("reasoning")
-            logger.info(f"模型状态已刷新: {self.current_model}")
-            return True
-        except Exception as e:
-            logger.error(f"刷新模型状态失败: {e}")
-            return False
+    def _migrate_to_cold_store(self, current_time: datetime.datetime):
+        """迁移到Cold Store"""
+        cutoff_date = current_time - datetime.timedelta(days=self.layer_config['warm_store_days'])
+        
+        memories_to_migrate = []
+        remaining_warm = []
+        
+        for memory in self.warm_store:
+            memory_time = datetime.datetime.fromisoformat(memory['timestamp'])
+            if memory_time < cutoff_date:
+                # 压缩存储
+                memory['compressed'] = True
+                memory['content'] = self._compress_content(memory['content'])
+                memories_to_migrate.append(memory)
+            else:
+                remaining_warm.append(memory)
+        
+        if memories_to_migrate:
+            self.cold_store.extend(memories_to_migrate)
+            self.warm_store = remaining_warm
+            print(f'🗄️ 迁移 {len(memories_to_migrate)} 条记忆到 Cold Store')
+    
+    def _cleanup_hot_ram(self):
+        """清理Hot RAM，保持合理大小"""
+        if len(self.hot_ram) > self.layer_config['max_hot_ram_size']:
+            # 保留最新的记录
+            self.hot_ram = self.hot_ram[-self.layer_config['max_hot_ram_size']:]
+            print(f'🧹 清理Hot RAM，保留最新 {len(self.hot_ram)} 条记录')
+    
+    def _generate_vector(self, content: str) -> List[float]:
+        """生成内容向量"""
+        # 简化的向量生成
+        import hashlib
+        hash_obj = hashlib.md5(content.encode())
+        vector = [float(b) / 255.0 for b in hash_obj.digest()[:50]]
+        return vector
+    
+    def _compress_content(self, content: str) -> str:
+        """压缩内容"""
+        # 简化的压缩 - 提取关键词
+        words = content.split()
+        if len(words) > 20:
+            return ' '.join(words[:10] + ['...'] + words[-10:])
+        return content
+    
+    def search_memories(self, query: str, layer: str = "all") -> List[Dict[str, Any]]:
+        """搜索记忆，支持分层搜索"""
+        results = []
+        
+        if layer in ["all", "hot_ram"]:
+            results.extend(self._search_layer(self.hot_ram, query))
+        
+        if layer in ["all", "warm_store"]:
+            results.extend(self._search_layer(self.warm_store, query))
+        
+        if layer in ["all", "cold_store"]:
+            results.extend(self._search_layer(self.cold_store, query))
+        
+        return results
+    
+    def _search_layer(self, layer_data: List[Dict], query: str) -> List[Dict[str, Any]]:
+        """在指定层搜索"""
+        results = []
+        query_lower = query.lower()
+        
+        for memory in layer_data:
+            content = memory['content'].lower()
+            if query_lower in content:
+                results.append({
+                    'id': memory['id'],
+                    'content': memory['content'],
+                    'category': memory['category'],
+                    'timestamp': memory['timestamp'],
+                    'layer': 'warm_store' if layer_data == self.warm_store else 
+                            'cold_store' if layer_data == self.cold_store else 'hot_ram',
+                    'relevance': content.count(query_lower) / len(content.split())
+                })
+        
+        return sorted(results, key=lambda x: x['relevance'], reverse=True)
+    
+    def get_system_status(self) -> Dict[str, Any]:
+        """获取系统状态"""
+        return {
+            'hot_ram_count': len(self.hot_ram),
+            'warm_store_count': len(self.warm_store),
+            'cold_store_count': len(self.cold_store),
+            'total_memories': len(self.hot_ram) + len(self.warm_store) + len(self.cold_store),
+            'layer_config': self.layer_config,
+            'memory_distribution': {
+                'hot_ram': len(self.hot_ram),
+                'warm_store': len(self.warm_store),
+                'cold_store': len(self.cold_store)
+            }
+        }
 
 # 创建全局实例
-enhanced_manager = None
+memory_manager = EnhancedThreeLayerMemoryManager()
 
-def get_enhanced_memory_manager(workspace_path: str = ".") -> EnhancedMemoryManager:
-    """获取增强版记忆管理器实例"""
-    global enhanced_manager
-    if enhanced_manager is None:
-        enhanced_manager = EnhancedMemoryManager(workspace_path)
-    return enhanced_manager
-
-def get_system_summary() -> str:
-    """获取系统摘要信息"""
-    manager = get_enhanced_memory_manager()
-    stats = manager.get_enhanced_stats()
+# 测试函数
+def test_enhanced_memory():
+    """测试增强版记忆管理器"""
+    print('🧪 测试增强版三层记忆管理器')
+    print('=' * 40)
     
-    if stats["success"]:
-        return stats["system_summary"]
-    else:
-        return "系统状态获取失败"
+    # 添加测试数据
+    test_memories = [
+        '今天完成了智能模型路由系统开发',
+        '语义可视化模块基本完成',
+        '定时汇报机制已配置',
+        '系统运行稳定，功能完整'
+    ]
+    
+    for memory in test_memories:
+        result = memory_manager.add_memory(memory, 'test')
+        print(f'✅ 添加记忆: {result}')
+    
+    # 显示系统状态
+    status = memory_manager.get_system_status()
+    print(f'📊 系统状态: {json.dumps(status, indent=2, ensure_ascii=False)}')
+    
+    # 搜索测试
+    search_results = memory_manager.search_memories('系统')
+    print(f'🔍 搜索结果: {len(search_results)} 条')
+    for result in search_results:
+        print(f'  - {result["content"]} (相关性: {result["relevance"]:.2f})')
+    
+    return status
 
 if __name__ == "__main__":
-    # 测试增强版记忆管理器
-    print("🧠 增强版轻量化三层记忆模型")
-    print("=" * 40)
-    
-    manager = get_enhanced_memory_manager()
-    
-    # 获取系统摘要
-    summary = get_system_summary()
-    print(f"📊 {summary}")
-    
-    # 获取详细信息
-    stats = manager.get_enhanced_stats()
-    if stats["success"]:
-        print(f"当前模型: {stats['model_info']['current_model']}")
-        print(f"记忆统计: {stats['memory_stats']['total_memories']}条")
-    
-    print("\n✅ 增强版记忆管理器运行正常")
+    test_enhanced_memory()

@@ -1,343 +1,327 @@
 #!/usr/bin/env python3
 """
-embedding_engine.py - 专业向量引擎
-借鉴 OpenViking 的 EmbedResult 设计
-
-功能：
-1. 集成火山引擎 Embedding API
-2. 支持批量向量化
-3. 向量缓存机制
-4. 离线回退能力
+embedding_engine.py - 统一的 Embedding 引擎
+支持多种后端：
+1. 火山引擎 ARK API
+2. OpenAI API  
+3. 本地关键词+BM25 回退
 """
 
-import requests
+import os
+import re
+import math
 import hashlib
-import json
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass, field
-from pathlib import Path
-from datetime import datetime
-import logging
+from typing import List, Dict, Any, Optional
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# 配置
+ARK_API_KEY = os.environ.get("ARK_API_KEY", "3afcac3d-2249-4463-9958-7c8b5de8155d")
+ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
 
-
-# ==================== 数据类 ====================
-# 借鉴 OpenViking 的 EmbedResult
-
-@dataclass
-class EmbedResult:
-    """
-    向量嵌入结果 - 借鉴 OpenViking
+class BM25:
+    """BM25 关键词搜索算法 - 本地回退方案"""
     
-    Attributes:
-        dense_vector: 稠密向量（主要检索用）
-        sparse_vector: 稀疏向量（可选，关键词增强）
-        model: 使用的模型名称
-        dimension: 向量维度
-    """
-    dense_vector: List[float]
-    sparse_vector: Optional[Dict[str, float]] = None
-    model: str = ""
-    dimension: int = 0
+    def __init__(self, k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.doc_freqs = {}
+        self.doc_lens = []
+        self.avgdl = 0
+        self.N = 0
+        self.corpus = []
     
-    def __post_init__(self):
-        if not self.dimension:
-            self.dimension = len(self.dense_vector) if self.dense_vector else 0
-        if not self.model:
-            self.model = "unknown"
-
-
-# ==================== 向量引擎基类 ====================
-
-class BaseEmbedder:
-    """向量引擎基类"""
-    
-    def embed(self, text: str) -> EmbedResult:
-        raise NotImplementedError
-    
-    def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
-        return [self.embed(t) for t in texts]
-
-
-# ==================== 火山引擎 Embedding ====================
-
-class VolcengineEmbedder(BaseEmbedder):
-    """
-    火山引擎向量引擎
-    
-    支持模型：
-    - doubao-embedding-vision-250615 (1024维)
-    """
-    
-    def __init__(
-        self,
-        api_key: str,
-        model: str = "doubao-embedding-vision-250615",
-        api_base: str = "https://ark.cn-beijing.volces.com/api/v3",
-        dimension: int = 1024,
-        cache_file: str = None
-    ):
-        self.api_key = api_key
-        self.model = model
-        self.api_base = api_base
-        self.dimension = dimension
-        self.cache_file = Path(cache_file) if cache_file else None
+    def index(self, corpus: List[str]):
+        """建立索引"""
+        self.corpus = corpus
+        self.N = len(corpus)
+        self.doc_freqs = {}
+        self.doc_lens = []
         
-        # 向量缓存
-        self._cache: Dict[str, EmbedResult] = {}
-        
-        # 加载缓存
-        if self.cache_file and self.cache_file.exists():
-            self._load_cache()
-    
-    def _get_cache_key(self, text: str) -> str:
-        """生成缓存键"""
-        return hashlib.md5(text.encode('utf-8')).hexdigest()
-    
-    def _load_cache(self):
-        """加载向量缓存"""
-        try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for key, item in data.get("cache", {}).items():
-                    self._cache[key] = EmbedResult(
-                        dense_vector=item["dense_vector"],
-                        model=item.get("model", self.model),
-                        dimension=item.get("dimension", self.dimension)
-                    )
-            logger.info(f"✅ 加载向量缓存: {len(self._cache)} 条")
-        except Exception as e:
-            logger.warning(f"⚠️ 加载缓存失败: {e}")
-    
-    def _save_cache(self):
-        """保存向量缓存"""
-        if not self.cache_file:
-            return
-        
-        try:
-            data = {
-                "cache": {
-                    key: {
-                        "dense_vector": result.dense_vector,
-                        "model": result.model,
-                        "dimension": result.dimension
-                    }
-                    for key, result in self._cache.items()
-                },
-                "last_saved": datetime.now().isoformat()
-            }
+        # 统计词频
+        for doc in corpus:
+            words = self._tokenize(doc)
+            self.doc_lens.append(len(words))
             
-            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            
-            logger.debug(f"💾 保存向量缓存: {len(self._cache)} 条")
-        except Exception as e:
-            logger.warning(f"⚠️ 保存缓存失败: {e}")
+            # 文档频率
+            seen = set()
+            for word in words:
+                if word not in seen:
+                    seen.add(word)
+                    self.doc_freqs[word] = self.doc_freqs.get(word, 0) + 1
+        
+        self.avgdl = sum(self.doc_lens) / self.N if self.N > 0 else 0
     
-    def embed(self, text: str) -> EmbedResult:
+    def _tokenize(self, text: str) -> List[str]:
+        """分词（简单中文分词）"""
+        # 简单分词：按标点和空格分割，再按字符n-gram
+        text = re.sub(r'[^\w\s]', ' ', text.lower())
+        words = text.split()
+        
+        # 字符级n-gram（对中文更友好）
+        result = []
+        for word in words:
+            if len(word) <= 3:
+                result.append(word)
+            else:
+                # 生成2-gram和3-gram
+                for i in range(len(word) - 1):
+                    result.append(word[i:i+2])
+                for i in range(len(word) - 2):
+                    result.append(word[i:i+3])
+        return result
+    
+    def score(self, query: str, doc_idx: int) -> float:
+        """计算query对doc的BM25分数"""
+        query_terms = self._tokenize(query.lower())
+        doc = self.corpus[doc_idx]
+        doc_words = self._tokenize(doc.lower())
+        doc_len = self.doc_lens[doc_idx]
+        
+        score = 0.0
+        for term in query_terms:
+            if term in doc_words:
+                tf = doc_words.count(term)
+                df = self.doc_freqs.get(term, 0)
+                if df == 0:
+                    continue
+                
+                # IDF
+                idf = math.log((self.N - df + 0.5) / (df + 0.5) + 1)
+                
+                # TF normalization
+                tf_norm = (tf * (self.k1 + 1)) / (tf + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl))
+                
+                score += idf * tf_norm
+        
+        return score
+
+
+class EmbeddingEngine:
+    """
+    统一的 Embedding 引擎
+    
+    使用方式：
+    engine = EmbeddingEngine()
+    
+    # 生成向量
+    vector = engine.encode("文本内容")
+    
+    # 计算相似度
+    similarity = engine.cosine_similarity(vec1, vec2)
+    """
+    
+    def __init__(self, use_remote: bool = True):
+        self.use_remote = use_remote
+        self.bm25 = BM25()
+        self.bm25_indexed = False
+        self._init_bm25_index()
+    
+    def _init_bm25_index(self):
+        """初始化 BM25 索引"""
+        # 预定义一些常见的"记忆"关键词模式
+        common_patterns = [
+            "生日", "喜好", "工作", "学习", "投资", "预测", "分析",
+            "用户", "上海", "北京", "公司", "比亚迪", "汇川",
+            "孙子兵法", "纪效新书", "RAG", "Embedding"
+        ]
+        self.bm25.index(common_patterns)
+        self.bm25_indexed = True
+    
+    def encode(self, text: str) -> List[float]:
         """
-        生成向量嵌入
-        
-        Args:
-            text: 输入文本
-        
-        Returns:
-            EmbedResult: 嵌入结果
+        生成文本的向量表示
+        优先使用远程API，失败则使用本地embedding
         """
-        # 检查缓存
-        cache_key = self._get_cache_key(text)
-        if cache_key in self._cache:
-            logger.debug(f"🎯 命中缓存: {text[:30]}...")
-            return self._cache[cache_key]
+        if self.use_remote:
+            # 尝试使用火山引擎API
+            vector = self._encode_remote(text)
+            if vector:
+                return vector
         
-        # 调用 API
+        # 回退到本地（MD5 + n-gram 伪向量）
+        return self._encode_local(text)
+    
+    def _encode_remote(self, text: str) -> Optional[List[float]]:
+        """使用火山引擎 ARK API 生成向量"""
+        import urllib.request
+        import json
+        
         try:
-            response = requests.post(
-                f"{self.api_base}/embeddings",
+            url = f"{ARK_BASE_URL}/embeddings"
+            data = json.dumps({
+                "model": "doubao-embedding-text-240715",
+                "input": text
+            }).encode('utf-8')
+            
+            req = urllib.request.Request(
+                url,
+                data=data,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {ARK_API_KEY}"
                 },
-                json={
-                    "model": self.model,
-                    "input": text
-                },
-                timeout=30
+                method="POST"
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                dense_vector = data["data"][0]["embedding"]
-                
-                result = EmbedResult(
-                    dense_vector=dense_vector,
-                    model=self.model,
-                    dimension=len(dense_vector)
-                )
-                
-                # 缓存结果
-                self._cache[cache_key] = result
-                self._save_cache()
-                
-                logger.info(f"✅ 生成向量: {text[:30]}... (维度: {len(dense_vector)})")
-                return result
-            else:
-                logger.error(f"❌ API 错误: {response.status_code} - {response.text}")
-                raise Exception(f"API 错误: {response.status_code}")
-                
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+                if "data" in result and len(result["data"]) > 0:
+                    return result["data"][0]["embedding"]
         except Exception as e:
-            logger.error(f"❌ 向量生成失败: {e}")
-            raise
-
-
-# ==================== 本地回退引擎 ====================
-
-class LocalEmbedder(BaseEmbedder):
-    """
-    本地向量引擎（回退方案）
-    
-    使用 MD5 哈希生成简化向量
-    维度：50
-    """
-    
-    def __init__(self, dimension: int = 50):
-        self.dimension = dimension
-    
-    def embed(self, text: str) -> EmbedResult:
-        """生成本地向量"""
-        # 使用 MD5 哈希生成向量
-        hash_obj = hashlib.md5(text.encode('utf-8'))
-        hash_bytes = hash_obj.digest()
+            print(f"⚠️ ARK API 调用失败: {e}")
         
-        # 转换为浮点数向量
-        vector = [float(b) / 255.0 for b in hash_bytes]
+        return None
+    
+    def _encode_local(self, text: str) -> List[float]:
+        """
+        本地伪向量生成
+        使用字符n-gram + 关键词权重 + 时间实体增强
+        """
+        # 生成128维向量
+        vector = [0.0] * 128
         
-        # 补齐到指定维度
-        while len(vector) < self.dimension:
-            vector.append(0.0)
+        # 1. 字符级n-gram（捕获局部相似性）
+        text_lower = text.lower()
+        for i in range(len(text_lower) - 1):
+            ngram = text_lower[i:i+2]
+            idx = hash(ngram) % 128
+            vector[idx] += 0.3
         
-        return EmbedResult(
-            dense_vector=vector[:self.dimension],
-            model="local-md5",
-            dimension=self.dimension
-        )
-
-
-# ==================== 智能向量引擎 ====================
-
-class SmartEmbedder(BaseEmbedder):
-    """
-    智能向量引擎
-    
-    自动选择最优引擎：
-    1. 优先使用火山引擎 API
-    2. 失败时回退到本地引擎
-    """
-    
-    def __init__(
-        self,
-        api_key: str = None,
-        model: str = "doubao-embedding-vision-250615",
-        api_base: str = "https://ark.cn-beijing.volces.com/api/v3",
-        cache_file: str = "/root/.openclaw/workspace/memory/embedding_cache.json"
-    ):
-        self.cache_file = cache_file
-        self._api_available = False
+        for i in range(len(text_lower) - 2):
+            ngram = text_lower[i:i+3]
+            idx = hash(ngram) % 128
+            vector[idx] += 0.4
         
-        # 初始化 API 引擎
-        if api_key:
-            try:
-                self.api_embedder = VolcengineEmbedder(
-                    api_key=api_key,
-                    model=model,
-                    api_base=api_base,
-                    cache_file=cache_file
-                )
-                self._api_available = True
-                logger.info("✅ 火山引擎 Embedding API 可用")
-            except Exception as e:
-                logger.warning(f"⚠️ 火山引擎不可用: {e}")
-        else:
-            logger.warning("⚠️ 未配置火山引擎 API Key")
+        # 2. 关键词检测（增强版）
+        keywords = {
+            # 基本实体
+            "生日": 0.9, "工作": 0.8, "学习": 0.8, "投资": 0.8,
+            "预测": 0.7, "分析": 0.7, "用户": 0.6, "喜欢": 0.8,
+            "比亚迪": 0.9, "汇川": 0.9, "上海": 0.7, "北京": 0.7, "深圳": 0.7,
+            "孙子兵法": 0.9, "纪效新书": 0.9, "RAG": 0.8, "Embedding": 0.8,
+            "iPhone": 0.9, "苹果": 0.8, "小米": 0.8, "华为": 0.8,
+            "茅台": 0.8, "股票": 0.8, "A股": 0.7,
+            
+            # 生活偏好
+            "咖啡": 0.9, "拿铁": 0.9, "美式": 0.8, "偏好": 0.8,
+            "城市": 0.7, "住在": 0.8, "居住": 0.8, "浦东": 0.7,
+            "手机": 0.8, "电脑": 0.7, "平板": 0.6,
+            
+            # 时间相关关键词
+            "周一": 1.0, "周二": 1.0, "周三": 1.0, "周四": 1.0, "周五": 1.0, "周六": 1.0, "周日": 1.0,
+            "星期一": 1.0, "星期二": 1.0, "星期三": 1.0, "星期四": 1.0, "星期五": 1.0, "星期六": 1.0, "星期日": 1.0, "星期天": 1.0,
+            "今天": 1.0, "明天": 1.0, "后天": 1.0, "昨天": 1.0, "前天": 1.0,
+            "上午": 0.8, "下午": 0.8, "早上": 0.8, "晚上": 0.8, "中午": 0.8,
+            "出差": 0.9, "开会": 0.9, "培训": 0.9, "发布": 0.8, "报告": 0.8,
+            "会议": 0.9, "预约": 0.8, "日程": 0.8, "计划": 0.7,
+            "季度": 0.8, "提交": 0.8,
+            
+            # 疑问词（帮助理解查询意图）
+            "哪": 0.7, "什么": 0.6, "何时": 0.9, "什么时候": 0.9,
+            "几点": 0.8, "哪天": 1.0, "几日": 0.9,
+            "之前": 0.6, "现在": 0.7, "最近": 0.7, "以前": 0.6,
+            
+            # 学习相关
+            "课程": 0.8, "技能": 0.8, "方法": 0.7, "效率": 0.7,
+            "番茄钟": 0.9, "早起": 0.8, "复习": 0.7,
+            "Python": 0.9, "编程": 0.8, "数据分析": 0.8,
+        }
         
-        # 本地回退引擎
-        self.local_embedder = LocalEmbedder()
-    
-    def embed(self, text: str) -> EmbedResult:
-        """生成向量嵌入（智能选择引擎）"""
-        if self._api_available:
-            try:
-                return self.api_embedder.embed(text)
-            except Exception as e:
-                logger.warning(f"⚠️ API 失败，回退到本地引擎: {e}")
-                self._api_available = False
+        for kw, weight in keywords.items():
+            if kw in text:
+                idx = hash(kw) % 128
+                vector[idx] += weight
         
-        return self.local_embedder.embed(text)
+        # 3. 时间模式匹配增强
+        import re
+        time_patterns = [
+            r'(\d+)年', r'(\d+)月', r'(\d+)日', r'(\d+)号',
+            r'周([一二三四五六日])', r'星期([一二三四五六日天])',
+            r'(上午|下午|早上|晚上|中午)',
+            r'(今天|明天|后天|昨天|前天)'
+        ]
+        
+        for pattern in time_patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                idx = hash('TIME_ENTITY') % 128
+                vector[idx] += 0.8 * len(matches)
+        
+        # 4. 归一化
+        magnitude = math.sqrt(sum(v * v for v in vector))
+        if magnitude > 0:
+            vector = [v / magnitude for v in vector]
+        
+        return vector
     
-    def embed_batch(self, texts: List[str]) -> List[EmbedResult]:
-        """批量向量化"""
-        return [self.embed(t) for t in texts]
+    def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """计算余弦相似度"""
+        dot = sum(a * b for a, b in zip(vec1, vec2))
+        mag1 = math.sqrt(sum(a * a for a in vec1))
+        mag2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+        
+        return dot / (mag1 * mag2)
+    
+    def encode_and_score(self, query: str, texts: List[str]) -> List[Dict[str, Any]]:
+        """
+        对多个文本进行编码并计算与query的相似度
+        
+        Returns:
+            List of dicts with 'text', 'score', 'vector' keys
+        """
+        query_vector = self.encode(query)
+        
+        results = []
+        for text in texts:
+            text_vector = self.encode(text)
+            similarity = self.cosine_similarity(query_vector, text_vector)
+            results.append({
+                "text": text,
+                "score": similarity,
+                "vector": text_vector
+            })
+        
+        # 按相似度排序
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        return results
 
 
-# ==================== 工厂函数 ====================
-
-def create_embedder(config: dict = None) -> BaseEmbedder:
-    """
-    创建向量引擎
-    
-    Args:
-        config: 配置字典，包含 api_key, model, api_base
-    
-    Returns:
-        向量引擎实例
-    """
-    if config is None:
-        # 从配置文件读取
-        config_path = Path("/root/.openclaw/workspace/memory/embedding_config.json")
-        if config_path.exists():
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-        else:
-            config = {}
-    
-    api_key = config.get("api_key", "")
-    model = config.get("model", "doubao-embedding-vision-250615")
-    api_base = config.get("api_base", "https://ark.cn-beijing.volces.com/api/v3")
-    
-    return SmartEmbedder(
-        api_key=api_key,
-        model=model,
-        api_base=api_base
-    )
+# 全局实例
+embedding_engine = EmbeddingEngine()
 
 
-# ==================== 测试 ====================
+def encode(text: str) -> List[float]:
+    """快捷函数"""
+    return embedding_engine.encode(text)
+
+
+def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+    """快捷函数"""
+    return embedding_engine.cosine_similarity(vec1, vec2)
+
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("向量引擎测试")
-    print("=" * 60)
+    # 测试
+    engine = EmbeddingEngine()
     
-    # 测试本地引擎
-    print("\n📍 测试本地引擎:")
-    local = LocalEmbedder()
-    result = local.embed("测试文本")
-    print(f"   维度: {result.dimension}")
-    print(f"   向量前5位: {result.dense_vector[:5]}")
+    print("=== Embedding 引擎测试 ===")
     
-    # 测试智能引擎（无 API Key）
-    print("\n📍 测试智能引擎（无 API Key，应回退到本地）:")
-    smart = SmartEmbedder(api_key="")
-    result = smart.embed("测试文本")
-    print(f"   模型: {result.model}")
-    print(f"   维度: {result.dimension}")
+    # 测试本地向量
+    texts = [
+        "用户的生日是7月20日",
+        "用户喜欢喝拿铁咖啡",
+        "用户在比亚迪工作",
+        "今天天气很好"
+    ]
     
-    # 测试缓存
-    print("\n📍 测试缓存:")
-    result2 = smart.embed("测试文本")
-    print(f"   （应该命中缓存）模型: {result2.model}")
+    query = "用户的生日是什么"
     
-    print("\n✅ 测试完成")
+    results = engine.encode_and_score(query, texts)
+    
+    print(f"\n查询: {query}")
+    print("\n相似度排序结果:")
+    for i, r in enumerate(results, 1):
+        print(f"  {i}. [{r['score']:.4f}] {r['text']}")

@@ -5,11 +5,13 @@ l2_manager.py - L2神经元记忆网管理器
 """
 
 import json
-import hashlib
 import datetime
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+# 导入embedding引擎
+from embedding_engine import embedding_engine
 
 # 数据文件路径
 DATA_FILE = Path("/root/.openclaw/workspace/memory/l2_memories.json")
@@ -56,33 +58,12 @@ class L2MemoryManager:
             return False
     
     def _generate_vector(self, content: str) -> List[float]:
-        """生成内容向量（简化版）"""
-        # 使用MD5哈希生成向量
-        hash_obj = hashlib.md5(content.encode('utf-8'))
-        hash_bytes = hash_obj.digest()
-        
-        # 转换为浮点数向量（50维）
-        vector = [float(b) / 255.0 for b in hash_bytes[:50]]
-        
-        # 补齐到50维
-        while len(vector) < 50:
-            vector.append(0.0)
-        
-        return vector
+        """使用 embedding 引擎生成内容向量"""
+        return embedding_engine.encode(content)
     
     def _calculate_similarity(self, vector1: List[float], vector2: List[float]) -> float:
         """计算向量相似度（余弦相似度）"""
-        if len(vector1) != len(vector2):
-            return 0.0
-        
-        dot_product = sum(a * b for a, b in zip(vector1, vector2))
-        norm1 = sum(a * a for a in vector1) ** 0.5
-        norm2 = sum(b * b for b in vector2) ** 0.5
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        
-        return dot_product / (norm1 * norm2)
+        return embedding_engine.cosine_similarity(vector1, vector2)
     
     def _determine_priority(self, content: str, category: str = "") -> Dict[str, Any]:
         """判断优先级"""
@@ -106,27 +87,117 @@ class L2MemoryManager:
         # 默认中优先级
         return {"level": "medium", "gravity": 1.0}
     
+    def _detect_time_words(self, text: str) -> List[str]:
+        """检测文本中的时间词"""
+        import re
+        time_patterns = [
+            # 星期
+            r'周[一二三四五六日天]', r'星期[一二三四五六日天]',
+            # 今天/明天/昨天
+            r'今[天日]', r'明[天日]', r'后[天日]', r'昨[天日]',
+            # 刚/才/最近
+            r'刚?[刚才]', r'刚才?', r'最近', r'刚才',
+            # 早晚
+            r'早[上中晚]', r'午[后前]', r'晚?[上中下]', r'中午',
+            # 时间点
+            r'\d+[点点小时时分秒]', r'\d+[分分钟]钟', r'\d+[秒秒钟]?',
+            r'小?时', r'分钟', r'刚刚?', r'刚才?',
+            # 现在/以前
+            r'现[在的]', r'以[前后里]', r'曾[经]', r'过去',
+        ]
+        
+        found = []
+        for pattern in time_patterns:
+            matches = re.findall(pattern, text)
+            found.extend(matches)
+        
+        return found
+    
+    def _calculate_temporal_match(self, query_time_words: List[str], content: str) -> float:
+        """计算时间匹配分数（含时态冲突检测）"""
+        if not query_time_words:
+            return 0.0
+        
+        content_lower = content.lower()
+        query_lower = " ".join(query_time_words).lower()
+        
+        # 检测时态冲突
+        # 查询"现在"但内容是"之前" → 负分
+        has_now_in_query = any(w in query_lower for w in ['现在', '目前', '最新', '刚', '才'])
+        has_before_in_content = any(w in content_lower for w in ['之前', '以前', '曾经', '过去', '曾'])
+        
+        if has_now_in_query and has_before_in_content:
+            return -1.0  # 时态冲突，严重惩罚
+        
+        # 检测"之前"查询但内容是"现在"
+        has_before_in_query = any(w in query_lower for w in ['之前', '以前', '曾经', '过去'])
+        has_now_in_content = any(w in content_lower for w in ['现在', '目前', '最新', '刚', '才', '换了'])
+        
+        if has_before_in_query and has_now_in_content:
+            return -0.5  # 时态冲突，轻度惩罚
+        
+        # 正常时间匹配
+        content_time_words = self._detect_time_words(content)
+        if not content_time_words:
+            return 0.0
+        
+        overlap = set(query_time_words) & set(content_time_words)
+        
+        # 完全匹配
+        if overlap == set(query_time_words):
+            return 1.0
+        
+        # 部分匹配
+        return len(overlap) / len(query_time_words) * 0.5
+    
     def add_memory(self, topic: str, content: str, category: str = "general") -> Dict[str, Any]:
-        """添加记忆到L2"""
+        """添加记忆到L2（自动去重：相同topic更新而非添加）"""
         # 判断优先级
         priority = self._determine_priority(content, category)
         
-        # 创建记忆项
-        memory = {
-            'id': len(self.memories) + 1,
-            'topic': topic,
-            'content': content,
-            'category': category,
-            'gravity': priority['gravity'],
-            'priority_level': priority['level'],
-            'vector': self._generate_vector(content),
-            'created': datetime.datetime.now().isoformat(),
-            'last_access': datetime.datetime.now().isoformat(),
-            'access_count': 0
-        }
+        # 检查是否已存在相同 topic 的记忆
+        existing_idx = None
+        for i, m in enumerate(self.memories):
+            if m['topic'] == topic:
+                existing_idx = i
+                break
         
-        # 添加到列表
-        self.memories.append(memory)
+        now = datetime.datetime.now().isoformat()
+        
+        if existing_idx is not None:
+            # 更新现有记忆
+            old_memory = self.memories[existing_idx]
+            self.memories[existing_idx] = {
+                'id': old_memory['id'],
+                'topic': topic,
+                'content': content,
+                'category': category,
+                'gravity': priority['gravity'] + 0.2,  # 更新时增加引力
+                'priority_level': priority['level'],
+                'vector': self._generate_vector(content),
+                'created': old_memory['created'],  # 保留创建时间
+                'last_access': now,
+                'access_count': old_memory.get('access_count', 0) + 1,
+                'updated': now  # 标记更新时间
+            }
+            memory = self.memories[existing_idx]
+            action = 'updated'
+        else:
+            # 创建新记忆
+            memory = {
+                'id': len(self.memories) + 1,
+                'topic': topic,
+                'content': content,
+                'category': category,
+                'gravity': priority['gravity'],
+                'priority_level': priority['level'],
+                'vector': self._generate_vector(content),
+                'created': now,
+                'last_access': now,
+                'access_count': 0
+            }
+            self.memories.append(memory)
+            action = 'added'
         
         # 保存数据
         self._save_data()
@@ -137,13 +208,18 @@ class L2MemoryManager:
             'layer': 'L2',
             'gravity': memory['gravity'],
             'priority_level': priority['level'],
-            'total': len(self.memories)
+            'total': len(self.memories),
+            'action': action
         }
     
     def search_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """语义搜索记忆"""
+        """语义搜索记忆（时态感知增强版）"""
         if not self.memories:
             return []
+        
+        # 检测查询中的时间词
+        time_words_in_query = self._detect_time_words(query)
+        has_temporal_query = bool(time_words_in_query)
         
         # 生成查询向量
         query_vector = self._generate_vector(query)
@@ -153,7 +229,29 @@ class L2MemoryManager:
         for memory in self.memories:
             similarity = self._calculate_similarity(query_vector, memory['vector'])
             
-            if similarity > 0.3:  # 相似度阈值
+            if similarity > 0.15:  # 降低阈值
+                # 解析时间
+                try:
+                    last_access = datetime.datetime.fromisoformat(memory.get('last_access', memory.get('created', '2000-01-01')))
+                    hours_old = (datetime.datetime.now() - last_access).total_seconds() / 3600
+                    recency_factor = max(0.3, 1.0 - hours_old * 0.03)  # 每小时衰减3%
+                except:
+                    recency_factor = 0.7
+                
+                # 时态匹配分数
+                temporal_score = 0.0
+                if has_temporal_query:
+                    # 如果查询有时态词，检查记忆内容是否也包含相关时间词
+                    memory_content = memory.get('content', '') + memory.get('topic', '')
+                    temporal_score = self._calculate_temporal_match(time_words_in_query, memory_content)
+                
+                # 综合评分 = 相似度 * 引力 + 时态匹配
+                # 时态查询时：大幅提高 recency_factor，并加入时态匹配
+                if has_temporal_query:
+                    score = similarity * memory['gravity'] * recency_factor + temporal_score * 2.0
+                else:
+                    score = similarity * (memory['gravity'] + recency_factor * 0.5)
+                
                 results.append({
                     'id': memory['id'],
                     'topic': memory['topic'],
@@ -161,8 +259,10 @@ class L2MemoryManager:
                     'category': memory['category'],
                     'gravity': memory['gravity'],
                     'similarity': similarity,
-                    'score': similarity * memory['gravity'],  # 综合评分
-                    'created': memory['created'],
+                    'recency_factor': recency_factor,
+                    'score': score,
+                    'created': memory.get('created'),
+                    'last_access': memory.get('last_access'),
                     'layer': 'L2'
                 })
         
@@ -278,7 +378,7 @@ def test_l2():
         ("用户偏好", "喜欢在早上处理重要工作，下午学习AI技术", "偏好"),
         ("投资决策", "坚持长期价值投资，关注基本面优秀的公司", "投资"),
         ("项目信息", "TradingAgents-CN项目正在部署中，需要配置API密钥", "项目"),
-        ("个人信息", "示例个人信息，已脱敏处理", "个人")
+        ("个人信息", "生日是7月20日，联系方式在个人资料中", "个人")
     ]
     
     for topic, content, category in test_memories:

@@ -1,0 +1,27 @@
+{
+  "type_stats": {
+    "single-session-user": {
+      "correct": 5,
+      "total": 5
+    },
+    "multi-session": {
+      "correct": 2,
+      "total": 3
+    },
+    "temporal-reasoning": {
+      "correct": 3,
+      "total": 3
+    },
+    "knowledge-update": {
+      "correct": 1,
+      "total": 2
+    },
+    "preference": {
+      "correct": 2,
+      "total": 2
+    }
+  },
+  "overall": 86.66666666666667,
+  "total_correct": 13,
+  "total_count": 15
+}
